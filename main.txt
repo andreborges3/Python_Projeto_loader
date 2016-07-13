@@ -1,0 +1,355 @@
+from oauth2client.service_account import ServiceAccountCredentials
+import httplib2
+from apiclient import discovery
+import gspread
+from datetime import datetime
+from pymongo import MongoClient
+import sqlite3
+from glob import glob
+from openpyxl import load_workbook
+import os.path
+from configparser import ConfigParser
+from collections import OrderedDict
+
+#******************** Variáveis GLOBAIS **************************
+vListaLog = []
+vListValues = []
+vDictValues = {}
+vDictTxt = {'Arquivo': 'teste', 'Itens': {}}
+vDictTxt.clear
+vFileName = ''
+vDictDicionario = {}
+vDictDocumentos = {}
+vDictPlanilhas = {}
+vDictColumns = {}
+
+vListDocumentos = []
+vListPlanilhas  = []
+
+
+# LOAD CONFIG.INI
+config = ConfigParser() # instantiate
+config.read('C:\Projetos\DataScience\Python\config.ini') # parse existing file
+# read values from a section
+CTYPE_LOAD = config.get('general', 'TYPE_LOAD')
+CPATH_LOCAL = config.get('general', 'PATH_LOCAL')
+PATH_LOCAL_FILES = config.get('general', 'PATH_LOCAL_FILES')
+CCREDENTIALS_FILE = config.get('general', 'CREDENTIALS_FILE')
+
+""" ABRE MONGODB
+conn = MongoClient('localhost', 27017)
+db = conn.Projetosdb
+vCollection = db.Projetosdb"""
+
+con = sqlite3.connect('Projetos.db')
+sqlite3.Connection
+cur = con.cursor()
+
+#******************** LOG .TXT **************************        
+def list_log(pText):
+    global vListaLog
+    vListaLog.clear
+    now = str(datetime.now())
+    vListaLog.append(now + ": " + pText)
+
+def save_log():
+    with open(CPATH_LOCAL + 'logs/load_log.txt', mode='wt') as LogFile:
+        for s in vListaLog:
+            LogFile.write(s + '\n')
+        LogFile.close
+
+# SAVE .TXT
+def export_to():
+    #limpa collection MONGODB
+    #vCollection.delete_many({})
+    #Abre txt
+    with open(CPATH_LOCAL + 'export/export.txt', mode='wt') as ExportFile:
+        for k, v in vDictTxt.items():            
+                s = "Projeto: {0}, Valor : {1}".format(k, v)                
+                s1 = s.replace("'',", "")
+                s2 = s1.replace("''", "")
+                s3 = s2.replace("' '", "")
+                #grava no MongoDb
+                #result = vCollection.insert_one({k: v})                
+                ExportFile.write(s2 + '\n')
+        ExportFile.close
+
+
+#******************** SQLLite **************************
+def open_sqlite():
+# Cria uma conexão com o banco de dados. Se o banco de dados não existir, ele é criado neste momento.
+    con = sqlite3.connect('Projetos.db')
+    sqlite3.Connection
+    cur = con.cursor() # Criando um cursor 
+    sqlite3.Cursor
+    
+def close_sqllite():
+    con.close() # Fecha a conexão  
+
+def sql_create_table(pTabela):
+    vScript = ''                 
+    vScript = 'CREATE TABLE if not exists TB_LOAD '\
+                    '(NM_DOCUMENT varchar(255), '\
+                    'NM_PLAN varchar(255), '\
+                    'C1 varchar(255), '\
+                    'C2 varchar(255), '\
+                    'C3 varchar(255), '\
+                    'C4 varchar(255), '\
+                    'C5 varchar(255), '\
+                    'C6 varchar(255), '\
+                    'C7 varchar(255), '\
+                    'C8 varchar(255), '\
+                    'C9 varchar(255), '\
+                    'C10 varchar(255), '\
+                    'C11 varchar(255), '\
+                    'C12 varchar(255), '\
+                    'C13 varchar(255), '\
+                    'C14 varchar(255), '\
+                    'C15 varchar(255), '\
+                    'C16 varchar(255), '\
+                    'C17 varchar(255), '\
+                    'C18 varchar(255), '\
+                    'C19 varchar(255), '\
+                    'C20 varchar(255)) '\
+                    
+    cur.execute('DROP TABLE TB_LOAD')
+    cur.execute(vScript)
+
+def sql_insert(pTabela, pListValores):
+    vSql_Insert = 'INSERT INTO TB_LOAD values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    
+    while len(pListValores) < 22:
+        pListValores.append(None)     
+        
+    # Inserindo os registros
+    recset = [pListValores]
+    for i in recset:
+        cur.execute(vSql_Insert, i)        
+    # Grava a transação
+    con.commit()        
+    
+def sql_select(pSql_Select):
+    cur.execute(pSql_Select)
+    print(' ********* Resultado Select: ********* ')
+    for linha in cur.fetchall():
+        print (linha)
+        
+#******************** MONGODB **************************                
+def create_mongodb():
+    #estabelecendo conexão
+    Conn = MongoClient('localhost', 27017)
+    # Lista os bancos de dados disponíveis client_con.database_names()
+    # Criar o banco de dados Projetosdb
+    db = conn.Projetosdb
+    vCollection = db.Projetosdb
+
+def close_mongodb():
+    conn.close()
+    
+def retorna_valor(pColuna, pValor):
+    print('Retorna COM where')
+    for post in vCollection.find({pColuna: pValor}):
+        print(post)
+            
+def retorna_tudo():    
+    print('Retorna TODOS')
+    for post in vCollection.find():
+        print(post)
+        
+#******************** GDRIVE **************************   
+def get_credentials(scope):
+    global credentials    
+    credentials = ServiceAccountCredentials.from_json_keyfile_name(CCREDENTIALS_FILE, scope)
+    return credentials
+
+def get_Files():
+    #******************** Lista arquivos no gdrive **************************
+    credentials = get_credentials(['https://www.googleapis.com/auth/drive.metadata.readonly'])
+    http = credentials.authorize(httplib2.Http())
+    service = discovery.build('drive', 'v3', http=http)
+    #Creates a Google Drive API service object and outputs the names and IDs for up to 20 files.    
+    Files = service.files().list(pageSize=10,fields="nextPageToken, files(id, name)").execute()    
+    return Files
+
+def get_worksheet_list(pFileName):
+    #******************** Lista todos os nomes das planilhas **************************
+    global gc, sh    
+    credentials = get_credentials(['https://spreadsheets.google.com/feeds'])
+    gc = gspread.authorize(credentials)
+    sh = gc.open(pFileName)
+    listaSheets = sh.worksheets()
+    return listaSheets
+
+def get_worksheet(pFileName, pPlan):
+    credentials = get_credentials(['https://spreadsheets.google.com/feeds'])
+    gc = gspread.authorize(credentials)
+    sh = gc.open(pFileName)
+    wk = sh.worksheet(pPlan)
+    return wk
+
+def load_gdrive_dicionario_de_dados(pFileName, pPlan):
+    global vDictDicionario, vListDocumentos, vListPlanilhas 
+    vDictDicionario.clear
+    vListDocumentos.clear
+    vListPlanilhas.clear
+    wk = get_worksheet('Dicionario de Dados', 'MAPA')
+    
+    vList = wk.col_values(1)
+    vListDocumentos = list(OrderedDict.fromkeys(vList))
+    vList = wk.col_values(2)
+    vListPlanilhas = list(OrderedDict.fromkeys(vList))    
+    lCellFind = wk.col_values(5)
+    lCellDesc = wk.col_values(6)
+    del lCellFind[0] # tira coluna de cabeçalho    
+    del lCellDesc[0] # tira coluna de cabeçalho
+    i = 1
+    while i <= len(lCellFind):
+        vValue = lCellFind[i-1]
+        #vDictDicionario[lCellDesc[i-1]] = value.replace
+        i = i + 1     
+        
+def load_gdrive_plan(pFileName, pPlan):
+    wk = get_worksheet(pFileName, pPlan)  
+    str_replace = pFileName + '_' + pPlan + '_'
+    vListValues = [pFileName, pPlan]
+    if pPlan == 'Dados do Projeto' or pPlan == 'Controle de Horas':
+        vListValues = [pFileName, pPlan]
+        vListRangeInsert = [pFileName, pPlan]
+        str_replace = pFileName + '_' + pPlan + '_'
+        for k, v in sorted(vDictDicionario.items()): 
+            if str_replace in k:
+                string = k.replace(str_replace, '')
+                if string[:7] == 'CELULA_':
+                    vListValues.append(wk.acell(v).value)
+                else:
+                    if string[:7] == 'COLUNA_':
+                        vListRangeInsert = [pFileName, pPlan]
+                        vListRange = wk.range(v)
+                        for i, val in enumerate(wk.range(v)):                        
+                            vListRangeInsert.append(vListRange[i].value)
+                        sql_insert('TB_LOAD', vListRangeInsert)  
+        sql_insert('TB_LOAD', vListValues)     
+
+def main_gdrive():   
+    #pega os arquivos existentes no drive
+    listFiles = get_Files().get('files', [])
+    load_gdrive_dicionario_de_dados('Dicionario de Dados', 'MAPA') 
+    if not listFiles:
+        list_log('No files found in directory.')
+    else:
+        for file in listFiles:
+            vFileName = '{0}'.format(file['name'])
+            if [x for x in vListDocumentos if vFileName in x]:
+                list_log('Load File: ' + vFileName)
+                #pega as sheets existenes em cada arquivo
+                listaSheets = get_worksheet_list(vFileName)
+                for i in listaSheets:
+                    if [x for x in vListPlanilhas if i.title in x]:
+                        list_log('     Load Worksheet: ' + i.title)
+                        #print(vFileName +'_'+ i.title)
+                        load_gdrive_plan(vFileName, i.title)                    
+                    
+#******************** EXCEL (.XLSX) **************************                
+def load_excel_dicionario_de_dados(wb, pPlan):    
+    """   global vDictDicionario, vDictColumns, vListDocumentos, vListPlanilhas 
+    vDictDicionario.clear
+    vListDocumentos.clear
+    vListPlanilhas.clear
+    
+    wk = wb.get_sheet_by_name(pPlan)    
+    vList = wk.columns[1]
+    vListDocumentos = list(OrderedDict.fromkeys(vList))
+    vList = wk.columns[2]
+    vListPlanilhas = list(OrderedDict.fromkeys(vList))
+    #lCellFind = wk.columns[5]
+    #lCellDesc = wk.columns[6]
+    #del lCellFind[0] # tira coluna de cabeçalho    
+    #del lCellDesc[0] # tira coluna de cabeçalho
+    i = 2
+    while wk.cell(row=i, column=1).value != None:
+        vDictDicionario[wk.cell(row=i, column=6).value] = wk.cell(row=i, column=5).value        
+        i = i + 1"""
+    global vDictDicionario, vDictColumns
+    vDictDicionario.clear
+    vDictColumns.clear
+    wk = wb.get_sheet_by_name(pPlan)
+    i = 2
+
+    while wk.cell(row=i, column=1).value != None:
+        vDictDicionario[wk.cell(row=i, column=6).value] = wk.cell(row=i, column=5).value        
+        vDocumento = wk.cell(row=i, column=1).value
+        vPlanilha = wk.cell(row=i, column=2).value
+        vColuna = wk.cell(row=i, column=1).value + '_' + wk.cell(row=i, column=2).value
+        var1 = vDictDocumentos.get(vDocumento)
+        if not var1:
+            vDictDocumentos[vDocumento] = i
+        var1 = vDictPlanilhas.get(vPlanilha)
+        if not var1:
+            vDictPlanilhas[vPlanilha] = i
+        var1 = vDictColumns.get(vColuna)
+        if not var1:
+            vDictColumns[vColuna] = i
+        i = i + 1  
+        
+
+def load_excel_plan(pFileName, pPlan):
+    wb = load_workbook(filename = pFileName, data_only = True)    
+    vFileName = os.path.splitext(os.path.basename(pFileName))[0]
+    vListValues = [vFileName, pPlan]
+    vListRangeInsert = [vFileName, pPlan]
+    vListValues = [vFileName, pPlan]
+    vListRangeInsert = [vFileName, pPlan]
+    wk = wb.get_sheet_by_name(pPlan)
+    str_replace = vFileName + '_' + pPlan + '_'
+    for k, v in sorted(vDictDicionario.items()): 
+        if str_replace in k:
+            string = k.replace(str_replace, '')
+            if string[:7] == 'CELULA_':
+                vListValues.append(wk.cell(v).value)
+            else:
+                if string[:7] == 'COLUNA_':
+                    vListRangeInsert = [pFileName, pPlan]
+                    vListRange = wk.range(v)
+                    for i, val in enumerate(wk.range(v)):                        
+                        vListRangeInsert.append(vListRange[i].value)                                
+                    sql_insert('TB_LOAD', vListRangeInsert)
+    sql_insert('TB_LOAD', vListValues) 
+
+def main_excel():
+    listFiles = glob(PATH_LOCAL_FILES + '*.xlsx')
+    if not listFiles:
+        print('No files found in directory.')
+    else:
+        wb = load_workbook(filename = PATH_LOCAL_FILES + 'Dicionario de Dados.xlsx', data_only=True)
+        load_excel_dicionario_de_dados(wb, 'MAPA')
+        for file in listFiles:
+            vFileName = file.replace('"\"', '"/"')
+            print(os.path.splitext(os.path.basename(vFileName))[0])
+            var1 = vDictDocumentos.get(os.path.splitext(os.path.basename(vFileName))[0])
+            if var1:                
+                wb = load_workbook(filename = vFileName, data_only=True)
+                listaSheets = wb.sheetnames
+                for i in listaSheets:
+                    var1 = vDictPlanilhas.get(i)
+                    if var1: 
+                        load_excel_plan(vFileName, i)
+
+if __name__ == '__main__':
+    vTimeStart = datetime.now()    
+    print('***** Hora Inicio: '+str(vTimeStart)+' ***** \n')
+    open_sqlite()
+    sql_create_table('TB_LOAD')
+    #create_mongodb()
+    if CTYPE_LOAD == 'gdrive':
+        main_gdrive()
+    else:
+        main_excel()
+    #export_to()
+    #retorna_tudo()
+    #retorna_valor('Plano de Projeto - Unilever 6ToWin', 'Arquivo')
+    #close_mongodb()
+    close_sqllite()
+    vTimeExecution = str(datetime.now() - vTimeStart)
+    list_log('********** Tempo de Execução: ' + vTimeExecution + ' **********')
+    #save_log()
+    print('***** Hora Fim: '+str(datetime.now())+' *****')
